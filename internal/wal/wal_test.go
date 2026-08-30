@@ -95,3 +95,18 @@ func TestDecodeRecordChecksumMismatch(t *testing.T) {
 		t.Fatal("ChecksumError reports matching checksums")
 	}
 }
+
+func TestDecodeRecordRejectsOversizedPayload(t *testing.T) {
+	header := make([]byte, recordHeaderSize)
+	// 0x01000001 is 16 MiB plus one byte in little-endian form.
+	header[0], header[1], header[2], header[3] = 0x01, 0x00, 0x00, 0x01
+
+	_, err := DecodeRecord(bytes.NewReader(header))
+	invalidErr, ok := err.(InvalidRecordError)
+	if !ok {
+		t.Fatalf("DecodeRecord() error = %T, want InvalidRecordError", err)
+	}
+	if got, want := invalidErr.Error(), "wal: invalid record: payload length implausibly large"; got != want {
+		t.Fatalf("DecodeRecord() error = %q, want %q", got, want)
+	}
+}

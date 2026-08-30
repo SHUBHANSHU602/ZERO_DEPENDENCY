@@ -13,9 +13,10 @@ const (
 	// RecordDelete identifies a record that removes a key.
 	RecordDelete byte = 0x02
 
-	recordHeaderSize = 4 + 4 + 1 + 8 + 2
-	maxUint16       = 1<<16 - 1
-	maxUint32       = 1<<32 - 1
+	recordHeaderSize  = 4 + 4 + 1 + 8 + 2
+	maxPayloadLength = 16 << 20
+	maxUint16         = 1<<16 - 1
+	maxUint32         = 1<<32 - 1
 )
 
 // Record is a single mutation stored in the write-ahead log.
@@ -81,6 +82,9 @@ func DecodeRecord(r io.Reader) (Record, error) {
 	}
 
 	payloadLength := binary.LittleEndian.Uint32(header[0:4])
+	if payloadLength > maxPayloadLength {
+		return Record{}, InvalidRecordError("payload length implausibly large")
+	}
 	expectedChecksum := binary.LittleEndian.Uint32(header[4:8])
 	recordType := header[8]
 	if err := validateType(recordType); err != nil {
