@@ -122,7 +122,10 @@ func (w *SegmentWriter) Close() error {
 }
 
 // SegmentManager owns the active WAL segment and rolls it when its configured
-// size threshold is reached.
+// size threshold is reached. It deliberately uses no separate manifest file:
+// the active segment is derived by scanning the directory for the
+// highest-numbered segment, avoiding a second piece of state that could drift
+// out of sync with the segment files after a crash.
 type SegmentManager struct {
 	mu        sync.Mutex
 	dir       string
