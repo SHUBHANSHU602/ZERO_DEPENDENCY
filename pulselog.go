@@ -1,2 +1,2 @@
-// Package pulselog provides a zero-dependency logging system written in Go.
+// Package pulselog provides a zero-dependency, crash-safe embedded key-value store.
 package pulselog

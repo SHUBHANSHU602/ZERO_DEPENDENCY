@@ -1,3 +1,3 @@
 # pulselog
 
-Pulselog is a zero-dependency logging system written in Go.
+PulseLog is a zero-dependency, crash-safe embedded key-value store written in Go.
