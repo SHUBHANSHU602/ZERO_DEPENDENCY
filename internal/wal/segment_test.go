@@ -1,6 +1,7 @@
 package wal
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -123,5 +124,72 @@ func TestSegmentManagerRollsAtThreshold(t *testing.T) {
 	}
 	if got := secondInfo.Size(); got != 0 {
 		t.Errorf("second segment size = %d, want 0", got)
+	}
+}
+
+func TestSegmentManagerResumesAfterRestart(t *testing.T) {
+	dir := t.TempDir()
+	records := []Record{
+		{Type: RecordPut, Timestamp: 1, Key: []byte("alpha"), Value: []byte("one")},
+		{Type: RecordPut, Timestamp: 2, Key: []byte("beta"), Value: []byte("two")},
+		{Type: RecordDelete, Timestamp: 3, Key: []byte("alpha")},
+	}
+
+	manager, err := NewSegmentManager(dir, 1<<20)
+	if err != nil {
+		t.Fatalf("NewSegmentManager() error = %v", err)
+	}
+	var wantOffset int64
+	for _, record := range records[:2] {
+		encoded, err := EncodeRecord(record)
+		if err != nil {
+			t.Fatalf("EncodeRecord() error = %v", err)
+		}
+		if _, _, err := manager.Append(record); err != nil {
+			t.Fatalf("Append() error = %v", err)
+		}
+		wantOffset += int64(len(encoded))
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	restarted, err := NewSegmentManager(dir, 1<<20)
+	if err != nil {
+		t.Fatalf("NewSegmentManager() after restart error = %v", err)
+	}
+	segment, offset, err := restarted.Append(records[2])
+	if err != nil {
+		t.Fatalf("Append() after restart error = %v", err)
+	}
+	if segment != 1 {
+		t.Errorf("Append() segment = %d, want 1", segment)
+	}
+	if offset != wantOffset {
+		t.Errorf("Append() offset = %d, want %d", offset, wantOffset)
+	}
+	if err := restarted.Close(); err != nil {
+		t.Fatalf("Close() after restart error = %v", err)
+	}
+
+	file, err := os.Open(filepath.Join(dir, "000001.seg"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer func() {
+		if err := file.Close(); err != nil {
+			t.Errorf("Close(segment) error = %v", err)
+		}
+	}()
+
+	for i, want := range records {
+		got, err := DecodeRecord(file)
+		if err != nil {
+			t.Fatalf("DecodeRecord(%d) error = %v", i, err)
+		}
+		if got.Type != want.Type || got.Timestamp != want.Timestamp ||
+			!bytes.Equal(got.Key, want.Key) || !bytes.Equal(got.Value, want.Value) {
+			t.Errorf("record %d = %+v, want %+v", i, got, want)
+		}
 	}
 }
