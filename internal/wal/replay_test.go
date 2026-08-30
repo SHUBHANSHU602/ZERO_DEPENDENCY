@@ -54,3 +54,43 @@ func TestReplayTruncatesTornWrite(t *testing.T) {
 		t.Fatalf("segment size after Replay() = %d, want %d", info.Size(), validSize)
 	}
 }
+
+func TestReplayTruncatesHeaderWithoutPayload(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, segmentFilename(firstSegmentNumber))
+	valid := Record{
+		Type: RecordPut, Timestamp: 1, Key: []byte("alpha"), Value: []byte("one"),
+	}
+	validEncoded, err := EncodeRecord(valid)
+	if err != nil {
+		t.Fatalf("EncodeRecord(valid record) error = %v", err)
+	}
+	tornEncoded, err := EncodeRecord(Record{
+		Type: RecordPut, Timestamp: 2, Key: []byte("beta"), Value: []byte("missing"),
+	})
+	if err != nil {
+		t.Fatalf("EncodeRecord(torn record) error = %v", err)
+	}
+
+	segment := append(append([]byte(nil), validEncoded...), tornEncoded[:recordHeaderSize]...)
+	if err := os.WriteFile(path, segment, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	got, err := Replay(dir)
+	if err != nil {
+		t.Fatalf("Replay() error = %v", err)
+	}
+	want := []Record{valid}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Replay() records = %#v, want %#v", got, want)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if got, want := info.Size(), int64(len(validEncoded)); got != want {
+		t.Fatalf("segment size after Replay() = %d, want %d", got, want)
+	}
+}

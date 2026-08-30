@@ -98,6 +98,12 @@ func DecodeRecord(r io.Reader) (Record, error) {
 
 	payload := make([]byte, int(payloadLength))
 	if _, err := io.ReadFull(r, payload); err != nil {
+		// A complete header proves that a record was started. If none of its
+		// payload reached disk, ReadFull reports EOF rather than UnexpectedEOF;
+		// normalize both cases so replay recognizes the torn write.
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
 		return Record{}, err
 	}
 	actualChecksum := recordChecksum(recordType, timestamp, payload)
