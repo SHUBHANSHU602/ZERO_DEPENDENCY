@@ -218,6 +218,31 @@ func (m *SegmentManager) Close() error {
 	return err
 }
 
+// Activate switches future appends to an existing, higher-numbered segment.
+// The replacement is opened before the current writer is closed so an open
+// failure leaves the manager untouched.
+func (m *SegmentManager) Activate(number uint64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.active == nil {
+		return os.ErrClosed
+	}
+	if number <= m.active.Number() {
+		return InvalidRecordError("replacement segment must be newer than active segment")
+	}
+
+	next, err := NewSegmentWriter(m.dir, number, m.threshold)
+	if err != nil {
+		return err
+	}
+	if err := m.active.Close(); err != nil {
+		_ = next.Close()
+		return err
+	}
+	m.active = next
+	return nil
+}
+
 // ListSegments returns paths to valid numbered segment files in dir, ordered
 // by ascending segment number. Files not matching the segment naming scheme
 // are ignored. A missing directory is treated as empty.

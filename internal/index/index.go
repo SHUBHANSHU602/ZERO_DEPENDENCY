@@ -56,3 +56,15 @@ func (idx *Index) Snapshot() map[string]Entry {
 	}
 	return entries
 }
+
+// Update atomically applies all supplied entries.
+func (idx *Index) Update(entries map[string]Entry) {
+	idx.mu.Lock()
+	defer idx.mu.Unlock()
+	if idx.entries == nil {
+		idx.entries = make(map[string]Entry)
+	}
+	for key, entry := range entries {
+		idx.entries[key] = entry
+	}
+}

@@ -3,6 +3,8 @@ package pulselog
 import (
 	"bytes"
 	"errors"
+	"os"
+	"sync"
 	"testing"
 	"time"
 	"uuid"
@@ -279,5 +281,154 @@ func TestPutGeneratesUniqueUUIDs(t *testing.T) {
 			t.Fatalf("duplicate UUID %s", record.ID)
 		}
 		seen[record.ID] = true
+	}
+}
+
+func TestCompactReclaimsDeadDataAndSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	db := openCompactionFixture(t, dir)
+
+	if err := db.Compact(); err != nil {
+		t.Fatalf("Compact() error = %v", err)
+	}
+	assertCompactedValues(t, db)
+	assertSegmentNames(t, dir, []string{"000002.seg", "000003.seg"})
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open() after compaction error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("Close() after compaction error = %v", err)
+		}
+	})
+	assertCompactedValues(t, reopened)
+}
+
+func TestCompactWithOnlyActiveSegmentIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	if err := db.Put("key", []byte("value")); err != nil {
+		t.Fatalf("Put() error = %v", err)
+	}
+	if err := db.Compact(); err != nil {
+		t.Fatalf("Compact() error = %v", err)
+	}
+	assertSegmentNames(t, dir, []string{"000001.seg"})
+	got, err := db.Get("key")
+	if err != nil || !bytes.Equal(got, []byte("value")) {
+		t.Fatalf("Get() after no-op compaction = %q, %v", got, err)
+	}
+}
+
+func TestCompactSerializesWithPutAndGet(t *testing.T) {
+	db := openCompactionFixture(t, t.TempDir())
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 3)
+	wg.Add(3)
+	go func() {
+		defer wg.Done()
+		errs <- db.Compact()
+	}()
+	go func() {
+		defer wg.Done()
+		errs <- db.Put("concurrent", []byte("write"))
+	}()
+	go func() {
+		defer wg.Done()
+		_, err := db.Get("live")
+		errs <- err
+	}()
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent operation error = %v", err)
+		}
+	}
+	for key, want := range map[string][]byte{"live": []byte("kept"), "concurrent": []byte("write")} {
+		got, err := db.Get(key)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("Get(%q) after concurrent compaction = %q, %v", key, got, err)
+		}
+	}
+}
+
+func openCompactionFixture(t *testing.T, dir string) *DB {
+	t.Helper()
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	for key, value := range map[string][]byte{
+		"live":    []byte("kept"),
+		"deleted": []byte("remove me"),
+	} {
+		if err := db.Put(key, value); err != nil {
+			t.Fatalf("Put(%q) error = %v", key, err)
+		}
+	}
+	if err := db.Put("overwritten", bytes.Repeat([]byte("x"), 3<<20)); err != nil {
+		t.Fatalf("Put(overwritten old value) error = %v", err)
+	}
+	if err := db.Put("overwritten", []byte("latest")); err != nil {
+		t.Fatalf("Put(overwritten latest value) error = %v", err)
+	}
+	if err := db.Delete("deleted"); err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	return db
+}
+
+func assertCompactedValues(t *testing.T, db *DB) {
+	t.Helper()
+	for key, want := range map[string][]byte{"live": []byte("kept"), "overwritten": []byte("latest")} {
+		got, err := db.Get(key)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Errorf("Get(%q) after compaction = %q, %v", key, got, err)
+		}
+	}
+	if _, err := db.Get("deleted"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Get(deleted) after compaction error = %v, want ErrNotFound", err)
+	}
+}
+
+func assertSegmentNames(t *testing.T, dir string, want []string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	var got []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			got = append(got, entry.Name())
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("segment files = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("segment files = %v, want %v", got, want)
+		}
 	}
 }

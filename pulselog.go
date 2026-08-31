@@ -9,11 +9,13 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
 	"uuid"
 
+	"pulselog/internal/compaction"
 	"pulselog/internal/index"
 	"pulselog/internal/wal"
 )
@@ -175,6 +177,83 @@ func (db *DB) RangeQuery(from, to time.Time) ([]Record, error) {
 		return records[i].Timestamp.Before(records[j].Timestamp)
 	})
 	return records, nil
+}
+
+// Compact reclaims dead records from every segment except the active one.
+// It holds db.mu exclusively for the full operation, serializing compaction
+// with Put, Get, Delete, RangeQuery, and Close.
+func (db *DB) Compact() error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.closed {
+		return os.ErrClosed
+	}
+
+	paths, err := wal.ListSegments(db.dir)
+	if err != nil {
+		return err
+	}
+	active := db.segments.ActiveSegmentNumber()
+	oldPaths := make([]string, 0, len(paths))
+	oldSegments := make(map[uint32]bool)
+	for _, path := range paths {
+		segmentID, err := segmentIDFromPath(path)
+		if err != nil {
+			return err
+		}
+		if uint64(segmentID) == active {
+			continue
+		}
+		oldPaths = append(oldPaths, path)
+		oldSegments[segmentID] = true
+	}
+	if len(oldPaths) == 0 {
+		return nil
+	}
+	if active == math.MaxUint32 {
+		return errors.New("pulselog: segment ID exhausted")
+	}
+
+	live := make([]compaction.LiveRecord, 0)
+	for key, entry := range db.index.Snapshot() {
+		if oldSegments[entry.SegmentID] {
+			live = append(live, compaction.LiveRecord{Key: key, Entry: entry})
+		}
+	}
+	sort.Slice(live, func(i, j int) bool {
+		if live[i].Entry.SegmentID == live[j].Entry.SegmentID {
+			return live[i].Entry.Offset < live[j].Entry.Offset
+		}
+		return live[i].Entry.SegmentID < live[j].Entry.SegmentID
+	})
+
+	newSegment := active + 1
+	entries, err := compaction.Merge(db.dir, newSegment, live)
+	if err != nil {
+		return err
+	}
+	if err := db.segments.Activate(newSegment); err != nil {
+		if path, pathErr := wal.SegmentPath(db.dir, newSegment); pathErr == nil {
+			_ = os.Remove(path)
+		}
+		return err
+	}
+	db.index.Update(entries)
+	for _, path := range oldPaths {
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func segmentIDFromPath(path string) (uint32, error) {
+	var segmentID uint64
+	name := filepath.Base(path)
+	if _, err := fmt.Sscanf(name, "%d.seg", &segmentID); err != nil || segmentID == 0 || segmentID > math.MaxUint32 {
+		return 0, fmt.Errorf("pulselog: invalid segment filename %q", name)
+	}
+	return uint32(segmentID), nil
 }
 
 func (db *DB) readRecord(key string, entry index.Entry) (Record, error) {
