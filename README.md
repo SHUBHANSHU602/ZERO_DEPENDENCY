@@ -101,6 +101,12 @@ For a reproducible Windows CLI build:
 > build.bat pulselog.exe
 ```
 
-The script uses `-trimpath`, disables environment-specific VCS stamping, and
-records the toolchain version beside the binary.
+On Linux or macOS, use the equivalent POSIX script:
+
+```console
+$ ./build.sh pulselog
+```
+
+Both scripts use `-trimpath`, disable environment-specific VCS stamping, and
+record the toolchain version beside the binary.
 See [REPRODUCIBLE_BUILD.md](REPRODUCIBLE_BUILD.md) for the two-build verification.
