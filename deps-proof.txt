@@ -1,1 +1,5 @@
+Command: go list -m all
+Output:
 pulselog
+
+Only the main module is listed. There are no required third-party modules.
