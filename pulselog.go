@@ -3,13 +3,16 @@ package pulselog
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"os"
+	"sort"
 	"sync"
 	"time"
+	"uuid"
 
 	"pulselog/internal/index"
 	"pulselog/internal/wal"
@@ -17,6 +20,19 @@ import (
 
 // ErrNotFound is returned when a key does not exist in the database.
 var ErrNotFound = errors.New("pulselog: key not found")
+
+// Record is a live key-value record returned by RangeQuery.
+type Record struct {
+	ID        uuid.UUID
+	Key       string
+	Value     []byte
+	Timestamp time.Time
+}
+
+type storedValue struct {
+	ID    uuid.UUID `json:"id"`
+	Value []byte    `json:"value"`
+}
 
 // DB is a crash-safe, append-only key-value store.
 type DB struct {
@@ -46,7 +62,12 @@ func Open(dir string) (*DB, error) {
 			idx.Delete(key)
 			continue
 		}
-		idx.Set(key, index.Entry{SegmentID: uint32(replayed.SegmentID), Offset: replayed.Offset, Length: replayed.Length})
+		idx.Set(key, index.Entry{
+			SegmentID: uint32(replayed.SegmentID),
+			Offset:    replayed.Offset,
+			Length:    replayed.Length,
+			Timestamp: replayed.Record.Timestamp,
+		})
 	}
 
 	segments, err := wal.NewSegmentManager(dir, wal.DefaultSegmentSize)
@@ -67,7 +88,12 @@ func (db *DB) Put(key string, value []byte) error {
 	if db.closed {
 		return os.ErrClosed
 	}
-	record := wal.Record{Type: wal.RecordPut, Timestamp: time.Now().UnixNano(), Key: []byte(key), Value: value}
+	// Package Killer: replaces github.com/google/uuid with the Go 1.27 standard library uuid package.
+	valueBytes, err := json.Marshal(storedValue{ID: uuid.NewV7(), Value: value})
+	if err != nil {
+		return err
+	}
+	record := wal.Record{Type: wal.RecordPut, Timestamp: time.Now().UnixNano(), Key: []byte(key), Value: valueBytes}
 	segmentID, offset, length, err := db.segments.Append(record)
 	if err != nil {
 		return err
@@ -75,7 +101,27 @@ func (db *DB) Put(key string, value []byte) error {
 	if segmentID > math.MaxUint32 {
 		return fmt.Errorf("pulselog: segment ID %d exceeds index capacity", segmentID)
 	}
-	db.index.Set(key, index.Entry{SegmentID: uint32(segmentID), Offset: offset, Length: uint32(length)})
+	db.index.Set(key, index.Entry{
+		SegmentID: uint32(segmentID),
+		Offset:    offset,
+		Length:    uint32(length),
+		Timestamp: record.Timestamp,
+	})
+	return nil
+}
+
+// Delete durably records a tombstone and removes key from the live index.
+func (db *DB) Delete(key string) error {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	if db.closed {
+		return os.ErrClosed
+	}
+	record := wal.Record{Type: wal.RecordDelete, Timestamp: time.Now().UnixNano(), Key: []byte(key)}
+	if _, _, _, err := db.segments.Append(record); err != nil {
+		return err
+	}
+	db.index.Delete(key)
 	return nil
 }
 
@@ -90,26 +136,77 @@ func (db *DB) Get(key string) ([]byte, error) {
 	if !ok {
 		return nil, ErrNotFound
 	}
-	path, err := wal.SegmentPath(db.dir, uint64(entry.SegmentID))
+	record, err := db.readRecord(key, entry)
 	if err != nil {
 		return nil, err
+	}
+	return record.Value, nil
+}
+
+// RangeQuery returns live records whose timestamps fall within [from, to],
+// ordered by timestamp ascending.
+func (db *DB) RangeQuery(from, to time.Time) ([]Record, error) {
+	db.mu.RLock()
+	defer db.mu.RUnlock()
+	if db.closed {
+		return nil, os.ErrClosed
+	}
+	fromUnix, toUnix := from.UnixNano(), to.UnixNano()
+	if fromUnix > toUnix {
+		return []Record{}, nil
+	}
+
+	entries := db.index.Snapshot()
+	records := make([]Record, 0)
+	for key, entry := range entries {
+		if entry.Timestamp < fromUnix || entry.Timestamp > toUnix {
+			continue
+		}
+		record, err := db.readRecord(key, entry)
+		if err != nil {
+			return nil, err
+		}
+		records = append(records, record)
+	}
+	sort.Slice(records, func(i, j int) bool {
+		if records[i].Timestamp.Equal(records[j].Timestamp) {
+			return records[i].Key < records[j].Key
+		}
+		return records[i].Timestamp.Before(records[j].Timestamp)
+	})
+	return records, nil
+}
+
+func (db *DB) readRecord(key string, entry index.Entry) (Record, error) {
+	path, err := wal.SegmentPath(db.dir, uint64(entry.SegmentID))
+	if err != nil {
+		return Record{}, err
 	}
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return Record{}, err
 	}
 	defer file.Close()
 	if _, err := file.Seek(entry.Offset, io.SeekStart); err != nil {
-		return nil, err
+		return Record{}, err
 	}
-	record, err := wal.DecodeRecord(io.LimitReader(file, int64(entry.Length)))
+	wRecord, err := wal.DecodeRecord(io.LimitReader(file, int64(entry.Length)))
 	if err != nil {
-		return nil, err
+		return Record{}, err
 	}
-	if record.Type != wal.RecordPut || !bytes.Equal(record.Key, []byte(key)) {
-		return nil, fmt.Errorf("pulselog: index entry for %q does not match WAL record", key)
+	if wRecord.Type != wal.RecordPut || !bytes.Equal(wRecord.Key, []byte(key)) {
+		return Record{}, fmt.Errorf("pulselog: index entry for %q does not match WAL record", key)
 	}
-	return append([]byte(nil), record.Value...), nil
+	var stored storedValue
+	if err := json.Unmarshal(wRecord.Value, &stored); err != nil {
+		return Record{}, fmt.Errorf("pulselog: decode value metadata for %q: %w", key, err)
+	}
+	return Record{
+		ID:        stored.ID,
+		Key:       key,
+		Value:     append([]byte(nil), stored.Value...),
+		Timestamp: time.Unix(0, wRecord.Timestamp),
+	}, nil
 }
 
 // Close closes the active WAL segment. It is safe to call Close more than once.
