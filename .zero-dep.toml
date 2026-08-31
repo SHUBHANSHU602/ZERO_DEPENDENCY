@@ -1,0 +1,3 @@
+track = "D"
+pitch = "A crash-safe embedded key-value store with WAL recovery, indexing, and compaction, built using only Go's standard library."
+

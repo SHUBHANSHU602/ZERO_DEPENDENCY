@@ -3,6 +3,24 @@
 PulseLog is a zero-dependency, crash-safe embedded key-value store written with
 the Go 1.27 standard library.
 
+It is designed for small agents, CLIs, collectors, and local services that need
+durable state without asking users to install SQLite, Redis, or a database
+server. PulseLog is an embedded storage engine rather than a wrapper around an
+existing database: it implements its own binary write-ahead log, checksummed
+records, crash recovery, in-memory index, segment rotation, and compaction.
+
+## Why a developer would use it
+
+- **One binary and one directory:** no database daemon, package download, or
+  network service is required.
+- **Durable acknowledgements:** successful mutations have passed `fsync`.
+- **Predictable recovery:** a process killed during an append repairs its torn
+  WAL tail on the next open.
+- **Direct reads:** the in-memory index seeks to the current record rather than
+  rescanning the log for every `get`.
+- **Honest scope:** PulseLog is suitable for local single-process workloads; it
+  does not claim distributed transactions, SQL, or multi-process coordination.
+
 ## Quickstart
 
 ```console
@@ -22,6 +40,18 @@ $ ./pulselog --dir ./demo-data compact
 
 `put`, `delete`, and `compact` are silent on success. Values may be supplied as
 the second `put` argument or read from standard input as shown above.
+
+## Five-minute judge demo
+
+1. Show `go.mod` and run `go list -m all`; the output contains only `pulselog`.
+2. Run the quickstart above to prove persistence across separate CLI processes.
+3. Overwrite and delete keys, run `compact`, then verify the remaining values.
+4. Interrupt a large write as described below and reopen the same directory to
+   demonstrate automatic torn-tail repair.
+5. Run `go test ./... -v`, then show `STDLIB.md` and the reproducible-build
+   hashes.
+
+The demo deliberately emphasizes observable guarantees rather than slides.
 
 ## Crash recovery
 
@@ -93,7 +123,11 @@ $ go version
 go version go1.27.0 windows/amd64
 $ go build ./...
 $ go test ./... -v
+$ go vet ./...
+$ go list -m all
 ```
+
+The expected dependency output is reproduced in [`deps-proof.txt`](deps-proof.txt).
 
 For a reproducible Windows CLI build:
 
