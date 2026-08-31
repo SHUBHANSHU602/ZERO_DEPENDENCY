@@ -31,12 +31,15 @@ func TestSegmentWriterAppendTracksSize(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EncodeRecord() error = %v", err)
 		}
-		offset, err := writer.Append(record)
+		offset, length, err := writer.Append(record)
 		if err != nil {
 			t.Fatalf("Append() error = %v", err)
 		}
 		if offset != wantSize {
 			t.Errorf("Append() offset = %d, want %d", offset, wantSize)
+		}
+		if length != len(encoded) {
+			t.Errorf("Append() length = %d, want %d", length, len(encoded))
 		}
 		wantSize += int64(len(encoded))
 		if got := writer.Size(); got != wantSize {
@@ -81,7 +84,7 @@ func TestSegmentManagerRollsAtThreshold(t *testing.T) {
 	})
 
 	for i := 0; i < 2; i++ {
-		segment, offset, err := manager.Append(record)
+		segment, offset, length, err := manager.Append(record)
 		if err != nil {
 			t.Fatalf("Append() error = %v", err)
 		}
@@ -91,6 +94,9 @@ func TestSegmentManagerRollsAtThreshold(t *testing.T) {
 		wantOffset := int64(i * len(encoded))
 		if offset != wantOffset {
 			t.Errorf("Append() offset = %d, want %d", offset, wantOffset)
+		}
+		if length != len(encoded) {
+			t.Errorf("Append() length = %d, want %d", length, len(encoded))
 		}
 	}
 
@@ -145,7 +151,7 @@ func TestSegmentManagerResumesAfterRestart(t *testing.T) {
 		if err != nil {
 			t.Fatalf("EncodeRecord() error = %v", err)
 		}
-		if _, _, err := manager.Append(record); err != nil {
+		if _, _, _, err := manager.Append(record); err != nil {
 			t.Fatalf("Append() error = %v", err)
 		}
 		wantOffset += int64(len(encoded))
@@ -158,7 +164,7 @@ func TestSegmentManagerResumesAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSegmentManager() after restart error = %v", err)
 	}
-	segment, offset, err := restarted.Append(records[2])
+	segment, offset, _, err := restarted.Append(records[2])
 	if err != nil {
 		t.Fatalf("Append() after restart error = %v", err)
 	}

@@ -62,31 +62,32 @@ func NewSegmentWriter(dir string, number uint64, threshold int64) (*SegmentWrite
 }
 
 // Append encodes rec and appends it to the segment, returning the record's
-// starting byte offset. A write is not considered durable until the file's
-// Sync method returns successfully; Append therefore calls Sync before it
-// reports success.
-func (w *SegmentWriter) Append(rec Record) (offset int64, err error) {
+// starting byte offset and encoded length. A write is not considered durable
+// until the file's Sync method returns successfully; Append therefore calls
+// Sync before it reports success.
+func (w *SegmentWriter) Append(rec Record) (offset int64, length int, err error) {
 	encoded, err := EncodeRecord(rec)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
+	length = len(encoded)
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.file == nil {
-		return 0, os.ErrClosed
+		return 0, 0, os.ErrClosed
 	}
 
 	offset = w.size
 	written, err := writeAll(w.file, encoded)
 	w.size += int64(written)
 	if err != nil {
-		return offset, err
+		return offset, length, err
 	}
 	if err := w.file.Sync(); err != nil {
-		return offset, err
+		return offset, length, err
 	}
-	return offset, nil
+	return offset, length, nil
 }
 
 // Size returns the current size of the segment in bytes.
@@ -172,26 +173,26 @@ func NewSegmentManager(dir string, threshold int64) (*SegmentManager, error) {
 }
 
 // Append writes rec durably to the active segment. It returns the segment
-// number and byte offset at which the record was written. If the append reaches
-// the size threshold, Append creates the next segment before returning.
-func (m *SegmentManager) Append(rec Record) (segment uint64, offset int64, err error) {
+// number, byte offset, and encoded length. If the append reaches the size
+// threshold, Append creates the next segment before returning.
+func (m *SegmentManager) Append(rec Record) (segment uint64, offset int64, length int, err error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.active == nil {
-		return 0, 0, os.ErrClosed
+		return 0, 0, 0, os.ErrClosed
 	}
 
 	segment = m.active.Number()
-	offset, err = m.active.Append(rec)
+	offset, length, err = m.active.Append(rec)
 	if err != nil {
-		return segment, offset, err
+		return segment, offset, length, err
 	}
 	if m.active.ShouldRoll() {
 		if err := m.roll(); err != nil {
-			return segment, offset, err
+			return segment, offset, length, err
 		}
 	}
-	return segment, offset, nil
+	return segment, offset, length, nil
 }
 
 // ActiveSegmentNumber returns the sequence number of the active segment. It

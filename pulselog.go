@@ -68,18 +68,14 @@ func (db *DB) Put(key string, value []byte) error {
 		return os.ErrClosed
 	}
 	record := wal.Record{Type: wal.RecordPut, Timestamp: time.Now().UnixNano(), Key: []byte(key), Value: value}
-	encoded, err := wal.EncodeRecord(record)
-	if err != nil {
-		return err
-	}
-	segmentID, offset, err := db.segments.Append(record)
+	segmentID, offset, length, err := db.segments.Append(record)
 	if err != nil {
 		return err
 	}
 	if segmentID > math.MaxUint32 {
 		return fmt.Errorf("pulselog: segment ID %d exceeds index capacity", segmentID)
 	}
-	db.index.Set(key, index.Entry{SegmentID: uint32(segmentID), Offset: offset, Length: uint32(len(encoded))})
+	db.index.Set(key, index.Entry{SegmentID: uint32(segmentID), Offset: offset, Length: uint32(length)})
 	return nil
 }
 

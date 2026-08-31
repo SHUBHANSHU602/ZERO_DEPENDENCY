@@ -30,6 +30,33 @@ func TestPutThenGet(t *testing.T) {
 	}
 }
 
+func TestPutOverwritesExistingKey(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+
+	if err := db.Put("key", []byte("first")); err != nil {
+		t.Fatalf("Put(first value) error = %v", err)
+	}
+	want := []byte("second")
+	if err := db.Put("key", want); err != nil {
+		t.Fatalf("Put(second value) error = %v", err)
+	}
+	got, err := db.Get("key")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Get() = %q, want %q", got, want)
+	}
+}
+
 func TestGetMissingKey(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {
@@ -80,5 +107,40 @@ func TestOpenRecoversExistingData(t *testing.T) {
 		if !bytes.Equal(got, want) {
 			t.Errorf("Get(%q) = %q, want %q", key, got, want)
 		}
+	}
+}
+
+func TestOpenRecoversLatestValueAfterOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if err := db.Put("key", []byte("first")); err != nil {
+		t.Fatalf("Put(first value) error = %v", err)
+	}
+	want := []byte("second")
+	if err := db.Put("key", want); err != nil {
+		t.Fatalf("Put(second value) error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open() after restart error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("Close() after restart error = %v", err)
+		}
+	})
+	got, err := reopened.Get("key")
+	if err != nil {
+		t.Fatalf("Get() after restart error = %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("Get() after restart = %q, want %q", got, want)
 	}
 }
