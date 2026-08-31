@@ -3,11 +3,15 @@ package pulselog
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 	"uuid"
+
+	"pulselog/internal/wal"
 )
 
 func TestPutThenGet(t *testing.T) {
@@ -430,5 +434,136 @@ func assertSegmentNames(t *testing.T, dir string, want []string) {
 		if got[i] != want[i] {
 			t.Fatalf("segment files = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestConcurrentPuts(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		db, err := Open(t.TempDir())
+		if err != nil {
+			t.Fatalf("Open() error = %v", err)
+		}
+		t.Cleanup(func() {
+			if err := db.Close(); err != nil {
+				t.Errorf("Close() error = %v", err)
+			}
+		})
+
+		const goroutines = 20
+		want := make(map[string][]byte, goroutines)
+		putErrors := make([]error, goroutines)
+		var wg sync.WaitGroup
+		wg.Add(goroutines)
+		for i := 0; i < goroutines; i++ {
+			key := fmt.Sprintf("key-%02d", i)
+			value := []byte(fmt.Sprintf("value-%02d", i))
+			want[key] = value
+			go func(i int, key string, value []byte) {
+				defer wg.Done()
+				putErrors[i] = db.Put(key, value)
+			}(i, key, value)
+		}
+		wg.Wait()
+
+		for i, err := range putErrors {
+			if err != nil {
+				t.Errorf("Put goroutine %d error = %v", i, err)
+			}
+		}
+		for key, wantValue := range want {
+			got, err := db.Get(key)
+			if err != nil {
+				t.Errorf("Get(%q) error = %v", key, err)
+				continue
+			}
+			if !bytes.Equal(got, wantValue) {
+				t.Errorf("Get(%q) = %q, want %q", key, got, wantValue)
+			}
+		}
+		if got := len(db.index.Snapshot()); got != goroutines {
+			t.Errorf("index entry count = %d, want %d", got, goroutines)
+		}
+	})
+}
+
+// This is the automated, repeatable equivalent of the demo video's live
+// kill -9: both prove that restart preserves valid records and removes a torn
+// final write.
+func TestOpenRecoversFromSimulatedCrash(t *testing.T) {
+	dir := t.TempDir()
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	want := map[string][]byte{
+		"alpha": []byte("one"),
+		"beta":  []byte("two"),
+		"gamma": []byte("three"),
+	}
+	for key, value := range want {
+		if err := db.Put(key, value); err != nil {
+			t.Fatalf("Put(%q) error = %v", key, err)
+		}
+	}
+	segmentPath, err := wal.SegmentPath(dir, db.segments.ActiveSegmentNumber())
+	if err != nil {
+		t.Fatalf("SegmentPath() error = %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	validInfo, err := os.Stat(segmentPath)
+	if err != nil {
+		t.Fatalf("Stat(valid segment) error = %v", err)
+	}
+
+	torn, err := wal.EncodeRecord(wal.Record{
+		Type: wal.RecordPut, Timestamp: time.Now().UnixNano(), Key: []byte("torn"), Value: []byte("missing"),
+	})
+	if err != nil {
+		t.Fatalf("EncodeRecord(torn record) error = %v", err)
+	}
+	const recordHeaderSize = 19
+	file, err := os.OpenFile(segmentPath, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		t.Fatalf("OpenFile(segment) error = %v", err)
+	}
+	if _, err := file.Write(torn[:recordHeaderSize]); err != nil {
+		_ = file.Close()
+		t.Fatalf("Write(torn header) error = %v", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		t.Fatalf("Sync(torn header) error = %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close(torn segment) error = %v", err)
+	}
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open() after simulated crash error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("Close() after recovery error = %v", err)
+		}
+	})
+	for key, wantValue := range want {
+		got, err := reopened.Get(key)
+		if err != nil {
+			t.Errorf("Get(%q) after recovery error = %v", key, err)
+			continue
+		}
+		if !bytes.Equal(got, wantValue) {
+			t.Errorf("Get(%q) after recovery = %q, want %q", key, got, wantValue)
+		}
+	}
+	recoveredInfo, err := os.Stat(segmentPath)
+	if err != nil {
+		t.Fatalf("Stat(recovered segment) error = %v", err)
+	}
+	if got, wantSize := recoveredInfo.Size(), validInfo.Size(); got != wantSize {
+		t.Fatalf("recovered segment size = %d, want %d", got, wantSize)
 	}
 }
