@@ -13,10 +13,10 @@ const (
 	// RecordDelete identifies a record that removes a key.
 	RecordDelete byte = 0x02
 
-	recordHeaderSize  = 4 + 4 + 1 + 8 + 2
+	recordHeaderSize = 4 + 4 + 1 + 8 + 2
 	maxPayloadLength = 16 << 20
-	maxUint16         = 1<<16 - 1
-	maxUint32         = 1<<32 - 1
+	maxUint16        = 1<<16 - 1
+	maxUint32        = 1<<32 - 1
 )
 
 // Record is a single mutation stored in the write-ahead log.

@@ -14,7 +14,7 @@ func TestReplayTruncatesTornWrite(t *testing.T) {
 	records := []Record{
 		{Type: RecordPut, Timestamp: 1, Key: []byte("alpha"), Value: []byte("one")},
 		{Type: RecordPut, Timestamp: 2, Key: []byte("beta"), Value: []byte("two")},
-		{Type: RecordDelete, Timestamp: 3, Key: []byte("alpha")},
+		{Type: RecordDelete, Timestamp: 3, Key: []byte("alpha"), Value: []byte{}},
 	}
 
 	var segment bytes.Buffer
@@ -104,7 +104,7 @@ func TestReplayAcrossMultipleSegments(t *testing.T) {
 		{Type: RecordPut, Timestamp: 2, Key: []byte("beta"), Value: []byte("two")},
 	}
 	secondRecords := []Record{
-		{Type: RecordDelete, Timestamp: 3, Key: []byte("alpha")},
+		{Type: RecordDelete, Timestamp: 3, Key: []byte("alpha"), Value: []byte{}},
 		{Type: RecordPut, Timestamp: 4, Key: []byte("gamma"), Value: []byte("three")},
 	}
 

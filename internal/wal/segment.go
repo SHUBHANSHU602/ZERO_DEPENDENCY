@@ -258,6 +258,14 @@ func ListSegments(dir string) ([]string, error) {
 	return paths, nil
 }
 
+// SegmentPath returns the path for a numbered WAL segment.
+func SegmentPath(dir string, number uint64) (string, error) {
+	if number == 0 {
+		return "", InvalidRecordError("segment number must be positive")
+	}
+	return filepath.Join(dir, segmentFilename(number)), nil
+}
+
 func (m *SegmentManager) roll() error {
 	nextNumber := m.active.Number() + 1
 	if nextNumber == 0 {

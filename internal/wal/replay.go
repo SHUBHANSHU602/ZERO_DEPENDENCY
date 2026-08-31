@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 )
 
 // Replay reads every WAL segment from oldest to newest and returns all records
@@ -12,14 +13,40 @@ import (
 // treated as a torn write: Replay removes that record and the remainder of its
 // segment, then continues with the next segment.
 func Replay(dir string) ([]Record, error) {
+	replayed, err := ReplayWithMetadata(dir)
+	if err != nil {
+		return nil, err
+	}
+	records := make([]Record, len(replayed))
+	for i := range replayed {
+		records[i] = replayed[i].Record
+	}
+	return records, nil
+}
+
+// ReplayedRecord describes a decoded record and its location in the WAL.
+type ReplayedRecord struct {
+	Record    Record
+	SegmentID uint64
+	Offset    int64
+	Length    uint32
+}
+
+// ReplayWithMetadata performs recovery and returns each record's location so
+// callers can rebuild an index without scanning the WAL a second time.
+func ReplayWithMetadata(dir string) ([]ReplayedRecord, error) {
 	segments, err := ListSegments(dir)
 	if err != nil {
 		return nil, err
 	}
 
-	var records []Record
+	var records []ReplayedRecord
 	for _, path := range segments {
-		segmentRecords, err := replaySegment(path)
+		segmentID, err := segmentNumber(filepath.Base(path))
+		if err != nil {
+			return nil, err
+		}
+		segmentRecords, err := replaySegment(path, segmentID)
 		if err != nil {
 			return nil, err
 		}
@@ -28,14 +55,14 @@ func Replay(dir string) ([]Record, error) {
 	return records, nil
 }
 
-func replaySegment(path string) ([]Record, error) {
+func replaySegment(path string, segmentID uint64) ([]ReplayedRecord, error) {
 	file, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
 
-	var records []Record
+	var records []ReplayedRecord
 	for {
 		offset, err := file.Seek(0, io.SeekCurrent)
 		if err != nil {
@@ -44,7 +71,16 @@ func replaySegment(path string) ([]Record, error) {
 
 		record, err := DecodeRecord(file)
 		if err == nil {
-			records = append(records, record)
+			end, err := file.Seek(0, io.SeekCurrent)
+			if err != nil {
+				return nil, err
+			}
+			records = append(records, ReplayedRecord{
+				Record:    record,
+				SegmentID: segmentID,
+				Offset:    offset,
+				Length:    uint32(end - offset),
+			})
 			continue
 		}
 		if errors.Is(err, io.EOF) {
