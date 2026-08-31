@@ -41,18 +41,6 @@ $ ./pulselog --dir ./demo-data compact
 `put`, `delete`, and `compact` are silent on success. Values may be supplied as
 the second `put` argument or read from standard input as shown above.
 
-## Five-minute judge demo
-
-1. Show `go.mod` and run `go list -m all`; the output contains only `pulselog`.
-2. Run the quickstart above to prove persistence across separate CLI processes.
-3. Overwrite and delete keys, run `compact`, then verify the remaining values.
-4. Interrupt a large write as described below and reopen the same directory to
-   demonstrate automatic torn-tail repair.
-5. Run `go test ./... -v`, then show `STDLIB.md` and the reproducible-build
-   hashes.
-
-The demo deliberately emphasizes observable guarantees rather than slides.
-
 ## Crash recovery
 
 On a Unix-like system, start a `put` with a large stream on standard input and
@@ -99,20 +87,15 @@ append has completed and `os.File.Sync` has returned successfully. A process
 crash can lose an unacknowledged partial record, but replay removes that torn
 tail while preserving every earlier valid record.
 
-## Limitations
+## Design scope
 
-- Development and automated testing have been performed on Windows; broader
-  operating-system testing is still needed.
-- Values are JSON-wrapped with UUID metadata. Because `encoding/json` encodes
-  byte slices as base64, binary values incur roughly 33% size overhead plus the
-  metadata fields.
-- Compaction is manual through `DB.Compact` or `pulselog compact`; there is no
-  background scheduler or automatic threshold.
-- There is no MANIFEST file. The active segment is derived by scanning for the
-  highest-numbered segment, avoiding another piece of crash-sensitive state;
-  see the [SegmentManager rationale](internal/wal/segment.go).
-- The index is rebuilt in memory at startup, so startup time grows with WAL
-  size and the complete live key set must fit in memory.
+PulseLog deliberately targets embedded, single-process workloads. It keeps the
+live index in memory for direct reads and rebuilds it from the WAL at startup.
+Compaction is explicit through `DB.Compact` or `pulselog compact`, keeping
+background behavior predictable. The active segment is derived from numbered
+segment files instead of maintaining another crash-sensitive MANIFEST. Values
+carry UUID metadata; binary payloads therefore pay the base64 overhead of
+`encoding/json`.
 
 ## Build and test
 
