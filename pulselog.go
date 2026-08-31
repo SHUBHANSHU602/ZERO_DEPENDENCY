@@ -239,12 +239,13 @@ func (db *DB) Compact() error {
 		return err
 	}
 	db.index.Update(entries)
+	var removeErrors []error
 	for _, path := range oldPaths {
 		if err := os.Remove(path); err != nil {
-			return err
+			removeErrors = append(removeErrors, fmt.Errorf("remove compacted segment %q: %w", path, err))
 		}
 	}
-	return nil
+	return errors.Join(removeErrors...)
 }
 
 func segmentIDFromPath(path string) (uint32, error) {
